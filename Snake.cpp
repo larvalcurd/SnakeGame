@@ -1,12 +1,11 @@
 ﻿#include <iostream>
+#include <deque>
 #include <vector>
 #include <conio.h>
 #include <cstdlib>
 #include <ctime>
 #include <thread>
 #include <chrono>
-
-using Coord = std::pair<int, int>;
 
 // --------------------- Constants ---------------------
 constexpr int DEFAULT_WIDTH = 20;
@@ -28,55 +27,133 @@ constexpr char EMPTY_CHAR = ' ';
 
 constexpr char WIN_MESSAGE[] = "You Win!";
 constexpr char LOSE_MESSAGE[] = "Game Over!";
+constexpr const char* CLEAR_SCREEN_CMD = "\x1b[H";
 
 // --------------------- Types ---------------------
+using Point = std::pair<int, int>;
 enum Direction { UP, DOWN, LEFT, RIGHT };
 
 struct GameState
 {
     int width;
     int height;
-    std::vector<Coord> snake;
-    Coord apple;
+    std::deque<Point> snake;
+    Point apple;
     Direction dir;
     bool alive;
     std::vector<std::vector<char>> field;
 };
 
-// --------------------- Functional Utilities ---------------------
-Coord MoveCoord(Coord p, Direction dir)
+// --------------------- Utility ---------------------
+bool IsHeadOutside(const GameState& state)
 {
-    switch (dir) {
-    case UP:    p.second--; break;
-    case DOWN:  p.second++; break;
-    case LEFT:  p.first--;  break;
-    case RIGHT: p.first++;  break;
+    const Point& head = state.snake.front();
+    return head.first <= 0 || head.second <= 0 ||
+        head.first >= state.width - 1 || head.second >= state.height - 1;
+}
+
+bool IsFree(const GameState& state, int x, int y)
+{
+    if (x <= 0 || y <= 0 || x >= state.width - 1 || y >= state.height - 1)
+        return false;
+    return state.field[y][x] == EMPTY_CHAR;
+}
+
+// --------------------- Apple ---------------------
+Point GenerateApple(const GameState& state)
+{
+    while (true)
+    {
+        int x = rand() % (state.width - 2) + 1;
+        int y = rand() % (state.height - 2) + 1;
+        if (IsFree(state, x, y))
+            return { x, y };
     }
-    return p;
 }
 
-bool IsInsideField(const GameState& state, Coord p)
+// --------------------- Initialization ---------------------
+void InitializeField(GameState& state, int width, int height)
 {
-    return p.first > 0 && p.second > 0 && p.first < state.width - 1 && p.second < state.height - 1;
+    state.width = width;
+    state.height = height;
+    state.field = std::vector<std::vector<char>>(height, std::vector<char>(width, EMPTY_CHAR));
 }
 
-bool IsCellFree(const GameState& state, Coord p)
+void InitializeSnake(GameState& state)
 {
-    if (!IsInsideField(state, p)) return false;
-    for (auto segment : state.snake)
-        if (segment == p) return false;
-    return true;
+    int midX = state.width / 2;
+    int midY = state.height / 2;
+    for (int i = 0; i < INITIAL_SNAKE_LENGTH; ++i)
+        state.snake.push_back({ midX - i, midY });
 }
 
-bool HasEatenApple(Coord head, Coord apple) { return head == apple; }
-
-bool IsCollision(const GameState& state)
+GameState InitGame(int width = DEFAULT_WIDTH, int height = DEFAULT_HEIGHT)
 {
-    Coord head = state.snake.front();
-    if (!IsInsideField(state, head)) return true;
+    GameState state;
+    InitializeField(state, width, height);
+    InitializeSnake(state);
+
+    int midX = width / 2;
+    int midY = height / 2;
+    state.apple = { midX + INITIAL_APPLE_OFFSET, midY };
+    state.dir = RIGHT;
+    state.alive = true;
+
+    return state;
+}
+
+// --------------------- Input ---------------------
+Direction HandleInput(Direction currentDirection)
+{
+    if (_kbhit()) {
+        char key = _getch();
+        switch (key) {
+            case KEY_UP:    if (currentDirection != DOWN)  return UP;    break;
+            case KEY_DOWN:  if (currentDirection != UP)    return DOWN;  break;
+            case KEY_LEFT:  if (currentDirection != RIGHT) return LEFT;  break;
+            case KEY_RIGHT: if (currentDirection != LEFT)  return RIGHT; break;
+        }
+    }
+    return currentDirection;
+}
+
+// --------------------- Snake Movement ---------------------
+Point GetNextHeadPosition(const GameState& state)
+{
+    Point head = state.snake.front();
+    switch (state.dir) {
+        case UP:    head.second--; break;
+        case DOWN:  head.second++; break;
+        case LEFT:  head.first--;  break;
+        case RIGHT: head.first++;  break;
+    }
+    return head;
+}
+
+void MoveSnake(GameState& state)
+{
+    Point newHead = GetNextHeadPosition(state);
+    state.snake.push_front(newHead);
+
+    if (newHead.first == state.apple.first && newHead.second == state.apple.second)
+        state.apple = GenerateApple(state);
+    else
+        state.snake.pop_back();
+}
+
+// --------------------- Collisions ---------------------
+bool IsSelfCollision(const GameState& state)
+{
+    const Point& head = state.snake.front();
     for (size_t i = 1; i < state.snake.size(); ++i)
-        if (head == state.snake[i]) return true;
+        if (head == state.snake[i])
+            return true;
     return false;
+}
+
+bool IsWallCollision(const GameState& state)
+{
+    return IsHeadOutside(state);
 }
 
 bool IsWin(const GameState& state)
@@ -84,159 +161,78 @@ bool IsWin(const GameState& state)
     return state.snake.size() >= (state.width - 2) * (state.height - 2);
 }
 
-Coord GenerateApple(const GameState& state)
+// --------------------- Game Logic ---------------------
+void UpdateGameState(GameState& state)
 {
-    while (true) {
-        Coord p{ rand() % (state.width - 2) + 1, rand() % (state.height - 2) + 1 };
-        if (IsCellFree(state, p)) return p;
-    }
+    MoveSnake(state);
+    if (IsWallCollision(state) || IsSelfCollision(state) || IsWin(state))
+        state.alive = false;
 }
 
-// --------------------- Terminal Utilities ---------------------
-void ClearScreen()
+// --------------------- Rendering ---------------------
+void ClearField(GameState& state)
 {
-    std::cout << "\x1b[2J";
+    for (int y = 0; y < state.height; ++y)
+        std::fill(state.field[y].begin(), state.field[y].end(), EMPTY_CHAR);
 }
 
-void MoveCursorBelowGame(const GameState& state)
+void DrawWalls(GameState& state)
 {
-    std::cout << "\x1b[" << state.height + 1 << ";1H";
-}
-
-void PrintEndMessage(const GameState& state)
-{
-    std::cout << (IsWin(state) ? WIN_MESSAGE : LOSE_MESSAGE) << "\n";
-}
-
-void DrawCell(Coord c, char ch)
-{
-    std::cout << "\x1b[" << c.second + 1 << ";" << c.first + 1 << "H" << ch;
-}
-
-// --------------------- Game State Updates ---------------------
-void InitField(GameState& state)
-{
-    state.field.assign(state.height, std::vector<char>(state.width, EMPTY_CHAR));
-}
-
-void PlaceWalls(GameState& state)
-{
-    for (int x = 0; x < state.width; x++) {
+    for (int x = 0; x < state.width; ++x) {
         state.field[0][x] = WALL_CHAR;
         state.field[state.height - 1][x] = WALL_CHAR;
     }
-    for (int y = 1; y < state.height - 1; y++) {
+    for (int y = 1; y < state.height - 1; ++y) {
         state.field[y][0] = WALL_CHAR;
         state.field[y][state.width - 1] = WALL_CHAR;
     }
 }
 
-void PlaceSnake(GameState& state)
+void DrawSnake(GameState& state)
 {
-    for (auto s : state.snake) state.field[s.second][s.first] = SNAKE_CHAR;
+    for (const auto& segment : state.snake)
+        state.field[segment.second][segment.first] = SNAKE_CHAR;
 }
 
-void PlaceApple(GameState& state)
+void DrawApple(GameState& state)
 {
     state.field[state.apple.second][state.apple.first] = APPLE_CHAR;
 }
 
-GameState InitGame(int width = DEFAULT_WIDTH, int height = DEFAULT_HEIGHT)
+void RenderFrame(GameState& state)
 {
-    GameState state;
-    state.width = width;
-    state.height = height;
-    state.alive = true;
-    state.dir = RIGHT;
-
-    InitField(state);
-
-    int midX = width / 2, midY = height / 2;
-    for (int i = 0; i < INITIAL_SNAKE_LENGTH; i++)
-        state.snake.push_back({ midX - i, midY });
-
-    state.apple = { midX + INITIAL_APPLE_OFFSET, midY };
-
-    ClearScreen();
-    return state;
-}
-
-// --------------------- Snake Operations ---------------------
-Coord GetNewHead(const GameState& state) { return MoveCoord(state.snake.front(), state.dir); }
-void GrowSnake(GameState& state, Coord head) { state.snake.insert(state.snake.begin(), head); }
-void MoveTail(GameState& state) { state.snake.pop_back(); }
-void EatApple(GameState& state) { state.apple = GenerateApple(state); }
-
-// --------------------- Game Update ---------------------
-void UpdateGame(GameState& state)
-{
-    Coord newHead = GetNewHead(state);
-
-    GrowSnake(state, newHead);
-
-    if (HasEatenApple(newHead, state.apple))
-        EatApple(state);
-    else
-        MoveTail(state);
-
-    state.alive = !IsCollision(state);
-    if (IsWin(state)) state.alive = false;
-
-
-    DrawCell(state.snake.front(), SNAKE_CHAR);
-    if (!HasEatenApple(newHead, state.apple))
-        DrawCell(state.snake.back(), EMPTY_CHAR);
-    DrawCell(state.apple, APPLE_CHAR);
-}
-
-// --------------------- Input ---------------------
-Direction HandleInput(Direction current)
-{
-    if (_kbhit()) {
-        char key = _getch();
-        switch (key) {
-        case KEY_UP:    if (current != DOWN)  return UP; break;
-        case KEY_DOWN:  if (current != UP)    return DOWN; break;
-        case KEY_LEFT:  if (current != RIGHT) return LEFT; break;
-        case KEY_RIGHT: if (current != LEFT)  return RIGHT; break;
-        }
-    }
-    return current;
-}
-
-// --------------------- Game Loop ---------------------
-void WaitNextFrame() { std::this_thread::sleep_for(std::chrono::milliseconds(TICK_DELAY_MS)); }
-
-void RunGame(GameState& state)
-{
-    InitField(state);
-    PlaceWalls(state);
-    PlaceSnake(state);
-    PlaceApple(state);
-    for (int y = 0; y < state.height; y++) {
-        for (int x = 0; x < state.width; x++)
+    ClearField(state);
+    DrawWalls(state);
+    DrawSnake(state);
+    DrawApple(state);
+    std::cout << CLEAR_SCREEN_CMD;
+    for (int y = 0; y < state.height; ++y) {
+        for (int x = 0; x < state.width; ++x)
             std::cout << state.field[y][x];
         std::cout << "\n";
     }
-
-    while (state.alive)
-    {
-        state.dir = HandleInput(state.dir);
-        static int tick = 0;
-        if (++tick % TICKS_PER_MOVE == 0)
-            UpdateGame(state);
-
-        WaitNextFrame();
-    }
-
-    MoveCursorBelowGame(state);
-    PrintEndMessage(state);
+    std::this_thread::sleep_for(std::chrono::milliseconds(TICK_DELAY_MS));
 }
 
-// --------------------- Entry Point ---------------------
+// --------------------- Game Loop ---------------------
+void RunGameLoop(GameState& game)
+{
+    int tick = 0;
+    while (game.alive)
+    {
+        game.dir = HandleInput(game.dir);
+        if (++tick % TICKS_PER_MOVE == 0)
+            UpdateGameState(game);
+        RenderFrame(game);
+    }
+    std::cout << (IsWin(game) ? WIN_MESSAGE : LOSE_MESSAGE) << "\n";
+}
+
+// --------------------- Entry ---------------------
 int main()
 {
     srand(static_cast<unsigned int>(time(nullptr)));
     GameState game = InitGame();
-    RunGame(game);
+    RunGameLoop(game);
+    return 0;
 }
